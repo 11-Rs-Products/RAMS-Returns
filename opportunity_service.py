@@ -22,6 +22,7 @@ from task_service import parse_and_validate_iso_date
 
 ALLOWED_TYPES = {"hackathon", "student_competition", "coding_competition", "innovation_challenge"}
 ALLOWED_TRUST = {"official", "secondary", "unverified"}
+ALLOWED_PLATFORMS = {"Unstop", "Devpost"}
 DATE_FIELDS = {
     "registration_deadline", "application_deadline", "submission_deadline",
     "event_start_date", "event_end_date", "results_announcement_date",
@@ -45,6 +46,28 @@ def validate_url(value: Optional[str]) -> Optional[str]:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
         raise ValueError("URLs must be public HTTP or HTTPS URLs.")
     return candidate
+
+
+def platform_for_url(value: Optional[str], require_listing: bool = False) -> Optional[str]:
+    """Return Unstop/Devpost only for exact platform hosts and listing paths."""
+    url = validate_url(value)
+    if not url:
+        return None
+    parsed = urlparse(url)
+    host = parsed.hostname.lower() if parsed.hostname else ""
+    if host not in {"unstop.com", "www.unstop.com"} and host not in {"devpost.com", "www.devpost.com"}:
+        return None
+    if host in {"unstop.com", "www.unstop.com"}:
+        platform = "Unstop"
+        path_parts = [part for part in parsed.path.lower().split("/") if part]
+        valid_path = len(path_parts) >= 2 and path_parts[0] == "hackathons" and bool(path_parts[1])
+    else:
+        platform = "Devpost"
+        path_parts = [part for part in parsed.path.lower().split("/") if part]
+        valid_path = len(path_parts) >= 2 and path_parts[0] == "hackathons" and bool(path_parts[1])
+    if require_listing and not valid_path:
+        return None
+    return platform
 
 
 def _optional_text(value: Any) -> Optional[str]:
@@ -213,7 +236,7 @@ def save_opportunity(data: Dict[str, Any], db_path=None) -> Dict[str, Any]:
     item["confidence_level"] = _confidence_from_provenance(provenance)
 
     columns = [
-        "title", "normalized_title", "description", "opportunity_type", "organizer", "source_url", "official_source_url",
+        "title", "normalized_title", "description", "opportunity_type", "platform", "organizer", "source_url", "official_source_url",
         "registration_url", "registration_deadline", "application_deadline", "submission_deadline", "event_start_date", "event_end_date", "results_announcement_date", "location", "is_online", "format",
         "eligibility_information", "eligible_education_levels", "eligible_regions", "required_skills", "team_size_rules", "themes", "participation_cost", "prize_information", "status",
         "source_name", "source_retrieved_at", "last_verified_at", "confidence_level", "extraction_confidence", "field_provenance", "created_at", "updated_at",
@@ -281,7 +304,7 @@ def save_opportunity(data: Dict[str, Any], db_path=None) -> Dict[str, Any]:
     return result
 
 
-def list_opportunities(opportunity_type: Optional[str] = None, query: Optional[str] = None, limit: int = 100, db_path=None) -> List[Dict[str, Any]]:
+def list_opportunities(opportunity_type: Optional[str] = None, query: Optional[str] = None, platform: Optional[str] = None, limit: int = 100, db_path=None) -> List[Dict[str, Any]]:
     conditions, params = [], []
     if opportunity_type:
         if opportunity_type not in ALLOWED_TYPES:
@@ -291,6 +314,14 @@ def list_opportunities(opportunity_type: Optional[str] = None, query: Optional[s
     if query and query.strip():
         conditions.append("(LOWER(title) LIKE ? OR LOWER(COALESCE(organizer, '')) LIKE ? OR LOWER(COALESCE(description, '')) LIKE ?)")
         params.extend([f"%{query.lower().strip()}%"] * 3)
+    if platform:
+        if platform == "Both platforms":
+            conditions.append("platform IN ('Unstop', 'Devpost')")
+        elif platform in ALLOWED_PLATFORMS:
+            conditions.append("platform = ?")
+            params.append(platform)
+        else:
+            raise ValueError("Unsupported opportunity platform filter.")
     where = " WHERE " + " AND ".join(conditions) if conditions else ""
     with get_db(db_path) as conn:
         rows = conn.execute(f"SELECT * FROM opportunities{where} ORDER BY source_retrieved_at DESC, id DESC LIMIT ?", params + [limit]).fetchall()
@@ -315,13 +346,14 @@ class BraveSearchProvider:
 
     def search(self, query: str, count: int = 10) -> List[Dict[str, Any]]:
         from urllib.parse import urlencode
-        req = Request(f"{self.endpoint}?{urlencode({'q': query, 'count': min(count, 20)})}", headers={"Accept": "application/json", "X-Subscription-Token": self.api_key, "User-Agent": "RAMS-Opportunity-Discovery/1.0"})
+        restricted_query = f"(site:unstop.com/hackathons OR site:devpost.com/hackathons) {query}"
+        req = Request(f"{self.endpoint}?{urlencode({'q': restricted_query, 'count': min(count, 20)})}", headers={"Accept": "application/json", "X-Subscription-Token": self.api_key, "User-Agent": "RAMS-Opportunity-Discovery/1.0"})
         try:
             with urlopen(req, timeout=12) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except Exception as exc:
             raise RuntimeError(f"Search provider request failed: {exc}") from exc
-        return [{"title": r.get("title"), "url": r.get("url"), "description": r.get("description"), "source_name": "Brave Search", "source_trust": "secondary"} for r in payload.get("web", {}).get("results", [])]
+        return [{"title": r.get("title"), "url": r.get("url"), "description": r.get("description"), "source_name": platform_for_url(r.get("url"), require_listing=True) or "Brave Search", "source_trust": "secondary"} for r in payload.get("web", {}).get("results", [])]
 
 
 class _TextExtractor(HTMLParser):
@@ -509,6 +541,7 @@ def extract_candidate(result: Dict[str, Any], opportunity_type: str, fetched: Op
     provenance = {}
     trust = result.get("source_trust", "secondary")
     source_url = url
+    platform = platform_for_url(url, require_listing=True)
 
     # Extract registration URL: check both link path and anchor text, validating each candidate
     registration_url = None
@@ -552,7 +585,7 @@ def extract_candidate(result: Dict[str, Any], opportunity_type: str, fetched: Op
         provenance[field] = {"confidence": trust, "source_url": source_url}
     return {
         "title": result.get("title") or fetched.get("title"), "description": _optional_text(result.get("description")) or _optional_text(text[:1000]),
-        "organizer": organizer, "opportunity_type": opportunity_type, "source_url": url,
+        "organizer": organizer, "opportunity_type": opportunity_type, "platform": platform, "source_url": url,
         "official_source_url": url if trust == "official" else None, "registration_url": registration_url,
         **dates, "format": event_format, "is_online": 1 if event_format == "online" else (0 if event_format == "offline" else None),
         "location": "Online" if event_format == "online" else _extract_labeled_text(text, (r"location", r"venue"), 160),
@@ -578,6 +611,10 @@ def discover_opportunities(query: str, opportunity_type: str, provider: Optional
     for result in results:
         try:
             url = validate_url(result.get("url"))
+            platform = platform_for_url(url, require_listing=True)
+            if not platform:
+                skipped.append({"url": result.get("url"), "reason": "unsupported source or non-listing page"})
+                continue
             fetched = fetcher.fetch(url)
             candidate = extract_candidate(result, opportunity_type, fetched)
             saved.append(save_opportunity(candidate, db_path=db_path))

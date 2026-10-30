@@ -112,7 +112,12 @@ def _any_overlap(a: str, b: str) -> bool:
 
 
 def _utc_today() -> date:
-    return datetime.now(timezone.utc).date()
+    """Use RAMS's configured student timezone for all opportunity availability."""
+    try:
+        from task_service import get_configured_timezone
+        return datetime.now(get_configured_timezone()).date()
+    except Exception:
+        return datetime.now(timezone.utc).date()
 
 
 def _parse_date_safe(val: Optional[str]) -> Optional[date]:
@@ -315,7 +320,7 @@ def compute_application_availability(opp: Dict[str, Any]) -> Tuple[str, str]:
     Rules:
     - Checks registration_deadline, application_deadline in that order.
     - Does NOT use submission_deadline or event dates as application deadlines.
-    - If all found deadlines are past → closed.
+    - If either known registration or application deadline is past → closed.
     - If any deadline is within CLOSING_SOON_DAYS → closing_soon.
     - If any deadline is in the future (beyond CLOSING_SOON_DAYS) → open.
     - No deadline info but event not started → upcoming.
@@ -334,16 +339,15 @@ def compute_application_availability(opp: Dict[str, Any]) -> Tuple[str, str]:
             found_dates.append((d, label))
 
     if found_dates:
-        future = [(d, lbl) for d, lbl in found_dates if d >= today]
         past = [(d, lbl) for d, lbl in found_dates if d < today]
-
-        if not future:
-            latest_past = max(d for d, _ in past)
+        if past:
+            latest_past, latest_label = max(past, key=lambda x: x[0])
             return (
                 AVAIL_CLOSED,
-                f"All known application/registration deadlines have passed "
-                f"(most recent: {latest_past}).",
+                f"{latest_label} has passed ({latest_past}); this opportunity is no longer actionable.",
             )
+
+        future = [(d, lbl) for d, lbl in found_dates if d >= today]
 
         # Find the soonest future deadline
         soonest_date, soonest_label = min(future, key=lambda x: x[0])
@@ -357,15 +361,6 @@ def compute_application_availability(opp: Dict[str, Any]) -> Tuple[str, str]:
         return (
             AVAIL_OPEN,
             f"{soonest_label} is open until {soonest_date} ({days_left} days remaining).",
-        )
-
-    # No application deadlines — check event start
-    event_start = _parse_date_safe(opp.get("event_start_date"))
-    if event_start and event_start > today:
-        return (
-            AVAIL_UPCOMING,
-            f"No application deadline found. The event starts on {event_start}. "
-            "Check the opportunity page for registration details.",
         )
 
     return (

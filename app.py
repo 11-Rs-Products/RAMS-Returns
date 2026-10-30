@@ -24,7 +24,10 @@ from database import (
     clear_all_memories,
     search_memories_for_context,
 )
-from llm_client import stream_chat_response, DEFAULT_MODEL, RECOMMENDED_MODELS, list_available_models
+from llm_client import stream_chat_response, DEFAULT_MODEL, DEFAULT_PROVIDER, RECOMMENDED_MODELS, list_available_models
+from nvidia_client import DEFAULT_NVIDIA_MODEL, nvidia_status
+from runtime_status import runtime_status
+from openshell_runner import verify_openshell_sandbox
 from memory_extractor import extract_and_save_memories
 from context_builder import build_enriched_system_prompt, format_memories_for_display
 from task_service import (
@@ -68,6 +71,7 @@ from eligibility_service import evaluate_eligibility, list_eligibility_evaluatio
 from ranking_service import (
     rank_student_opportunities,
     list_ranked_opportunities,
+    list_deadline_unknown_opportunities,
     explain_opportunity_ranking,
     refresh_opportunity_ranking,
 )
@@ -139,19 +143,27 @@ with st.sidebar:
     st.markdown("## 🧠 RAMS Settings")
     st.caption("Memory-aware conversational AI")
 
-    # API Key
+    # Provider and API key
+    provider_options = ["gemini", "nvidia"]
+    provider_default = DEFAULT_PROVIDER if DEFAULT_PROVIDER in provider_options else "gemini"
+    active_provider = st.selectbox("LLM Provider", provider_options, index=provider_options.index(provider_default), key="llm_provider")
     env_api_key = os.getenv("GEMINI_API_KEY", "")
-    api_key_input = st.text_input("Gemini API Key", value=env_api_key, type="password",
-                                   help="Set via GEMINI_API_KEY in .env")
-    api_key = api_key_input.strip() or env_api_key
+    env_nvidia_key = os.getenv("NVIDIA_API_KEY", "")
+    if active_provider == "nvidia":
+        api_key_input = st.text_input("NVIDIA API Key", value=env_nvidia_key, type="password", help="Set via NVIDIA_API_KEY in .env")
+        api_key = api_key_input.strip() or env_nvidia_key
+        st.caption(f"Nemotron model: `{os.getenv('NVIDIA_MODEL', DEFAULT_NVIDIA_MODEL)}`")
+    else:
+        api_key_input = st.text_input("Gemini API Key", value=env_api_key, type="password", help="Set via GEMINI_API_KEY in .env")
+        api_key = api_key_input.strip() or env_api_key
 
     st.divider()
 
     # Model Selection
     st.markdown("**Model**")
-    display_options = list(st.session_state.model_list) + ["✏️ Custom..."]
+    display_options = ([os.getenv("NVIDIA_MODEL", DEFAULT_NVIDIA_MODEL)] if active_provider == "nvidia" else list(st.session_state.model_list)) + ["✏️ Custom..."]
     current_idx = next((i for i, v in enumerate(display_options) if v == st.session_state.active_model), 0)
-    choice = st.selectbox("Gemini Model", display_options, index=current_idx, label_visibility="collapsed")
+    choice = st.selectbox("Model", display_options, index=current_idx, label_visibility="collapsed")
 
     if choice == "✏️ Custom...":
         custom = st.text_input("Model name", placeholder="gemini-3.8-flash").strip()
@@ -179,6 +191,26 @@ with st.sidebar:
                 st.warning("Add API key first.")
 
     st.caption(f"Using: `{selected_model}`")
+    with st.expander("System integration status", expanded=False):
+        if active_provider == "nvidia":
+            n_status = nvidia_status()
+            st.write(f"NVIDIA configured: {'yes' if n_status['configured'] else 'no'}")
+            st.write(f"NVIDIA inference connected: no live check performed")
+        shell_status = runtime_status(active_provider)["openshell"]
+        st.write(f"OpenShell available: {'yes' if shell_status['available'] else 'no'}")
+        st.write(f"OpenShell gateway reachable: {'yes' if shell_status.get('gateway_reachable') else 'no'}")
+        st.caption("RAMS is not claimed to be sandboxed unless run inside an explicitly created OpenShell sandbox.")
+        sandbox_name = st.text_input("Existing OpenShell sandbox name", key="openshell_sandbox_name")
+        if st.button("Verify OpenShell sandbox", key="verify_openshell"):
+            if not sandbox_name.strip():
+                st.warning("Enter an existing sandbox name. RAMS will not create a sandbox or run a local fallback.")
+            else:
+                verification = verify_openshell_sandbox(sandbox_name.strip())
+                if verification.get("success"):
+                    st.success(f"Sandbox verified (exit {verification.get('returncode')}): {verification.get('stdout', '').strip()}")
+                else:
+                    st.error(verification.get("error") or f"Sandbox command failed (exit {verification.get('returncode')}).")
+                st.json(verification)
     st.divider()
 
     # System persona
@@ -930,9 +962,9 @@ with tab_opportunities:
         with r_top_left:
             if st.button("🎯 Calculate / Refresh My Rankings", type="primary", key="btn_rank_all"):
                 with st.spinner("Analyzing your profile, workload, and opportunities..."):
-                    res = rank_student_opportunities()
+                    res = rank_student_opportunities(active_only=True)
                 if res.get("success"):
-                    st.success(f"Successfully ranked {res.get('count', 0)} opportunities!")
+                    st.success(f"Successfully ranked {res.get('count', 0)} actionable opportunities!")
                     st.rerun()
                 else:
                     st.error(res.get("error", "Ranking failed."))
@@ -949,13 +981,13 @@ with tab_opportunities:
         ranked_data = list_ranked_opportunities(
             category=None if cat_filter == "All" else cat_filter,
             min_score=min_score if min_score > 0 else None,
+            active_only=True,
         )
         ranked_list = ranked_data.get("ranked_opportunities", [])
 
         if not ranked_list:
             st.info(
-                "No ranked opportunities found for this filter. "
-                "Click **'🎯 Calculate / Refresh My Rankings'** to evaluate saved opportunities against your student profile and schedule."
+                "No active saved opportunities match this filter. Use **Discover & Browse** to find hackathons, then calculate rankings."
             )
         else:
             cat_icons = {
@@ -1050,6 +1082,17 @@ with tab_opportunities:
                             st.success("Refreshed ranking!")
                             st.rerun()
 
+        unknown_deadlines = list_deadline_unknown_opportunities()
+        if unknown_deadlines:
+            st.markdown("#### ❔ Deadline Unknown / Verify")
+            st.caption("These saved opportunities are not active recommendations until their registration or application deadline is confirmed.")
+            for op in unknown_deadlines:
+                link = op.get("registration_url") or op.get("source_url")
+                if link:
+                    st.markdown(f"- **{op['title']}** — [verify deadline]({link})")
+                else:
+                    st.markdown(f"- **{op['title']}** — source/deadline unavailable")
+
     # ── Subtab 2: Discover & Browse ──────────────────────────────────────────
     with subtab_browse:
         st.caption("Source URLs and verification status are kept with every saved result; unknown fields stay blank.")
@@ -1071,14 +1114,15 @@ with tab_opportunities:
                     else:
                         st.error(f"Discovery did not run: {result['error']}")
         with right:
+            source_filter = st.selectbox("Platform source", ["Both platforms", "Unstop", "Devpost"], key="op_source_filter")
             filter_kind = st.selectbox("Filter type", ["All"] + sorted(ALLOWED_TYPES), format_func=lambda x: x if x == "All" else x.replace("_", " ").title(), key="op_filter")
             keyword = st.text_input("Search saved opportunities", key="op_saved_search")
-            saved = list_opportunities(None if filter_kind == "All" else filter_kind, keyword or None, limit=100)
+            saved = list_opportunities(None if filter_kind == "All" else filter_kind, keyword or None, platform=source_filter, limit=100)
             if not saved:
                 st.info("No saved opportunities yet. Run a discovery search to add source-tracked results.")
             for op in saved:
                 badge = {"official": "✅ Official-source fields", "secondary": "⚠️ Secondary-source fields", "mixed": "⚠️ Mixed sources", "unverified": "❔ Unverified"}.get(op["confidence_level"], "❔ Unverified")
-                with st.expander(f"{op['title']} — {op.get('organizer') or 'Organizer unknown'}"):
+                with st.expander(f"[{op.get('platform') or 'Legacy source'}] {op['title']} — {op.get('organizer') or 'Organizer unknown'}"):
                     extraction_badge = {"high": "high", "medium": "medium", "low": "low"}.get(op.get("extraction_confidence", "low"), "low")
                     st.caption(f"{badge} · extraction confidence: {extraction_badge} · retrieved {op['source_retrieved_at']}")
                     if op.get("description"):
@@ -1302,7 +1346,8 @@ with tab_chat:
         # Generate response
         with st.chat_message("assistant"):
             if not api_key:
-                error_msg = "⚠️ **No Gemini API key.** Add it in the sidebar or set `GEMINI_API_KEY` in `.env`."
+                key_name = "NVIDIA_API_KEY" if active_provider == "nvidia" else "GEMINI_API_KEY"
+                error_msg = f"⚠️ **No {active_provider.title()} API key.** Add it in the sidebar or set `{key_name}` in `.env`."
                 st.error(error_msg)
                 assistant_response = error_msg
             else:
@@ -1314,6 +1359,7 @@ with tab_chat:
                             api_key=api_key,
                             system_instruction=enriched_system,
                             enable_tools=enable_tools,
+                            provider=active_provider,
                         )
                         assistant_response = st.write_stream(stream)
                         if not assistant_response or not assistant_response.strip():
@@ -1330,14 +1376,17 @@ with tab_chat:
             asst_msg_id = save_message(st.session_state.conversation_id, "assistant", assistant_response)
 
         # Auto-extract memories
-        if auto_extract and api_key and not assistant_response.startswith("⚠️"):
+        # Memory extraction remains on the existing Gemini extraction path. When
+        # Nemotron is selected, use Gemini only if its key is separately present.
+        memory_api_key = env_api_key
+        if auto_extract and memory_api_key and not assistant_response.startswith("⚠️"):
             with st.spinner("🧠 Extracting memories..."):
                 try:
                     results = extract_and_save_memories(
                         messages=st.session_state.messages[-4:],
                         source_message_id=asst_msg_id or user_msg_id,
-                        api_key=api_key,
-                        model=selected_model,
+                        api_key=memory_api_key,
+                        model=DEFAULT_MODEL,
                     )
                     if results:
                         new_count = sum(1 for r in results if r.get("change_type") == "new")

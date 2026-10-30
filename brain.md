@@ -369,6 +369,24 @@ CREATE TABLE opportunity_eligibility (
 
 ## 8. Roadmap & Next Phases
 
+### Final Submission Integration
+
+- Discovery now accepts and displays only individual hackathon listings from exact
+  Unstop or Devpost hosts. Brave searches are site-restricted and URLs are checked
+  again before fetching; legacy records from other sources remain stored but are not
+  included by the default platform filter.
+- Opportunity extraction stores distinct registration, application, submission,
+  event, and results dates. Ambiguous dates remain unknown. Explicit eligibility,
+  education level, region, format, team, theme, fee, prize, and skills fields retain
+  source provenance and extraction confidence.
+- Optional NVIDIA Nemotron support uses the verified OpenAI-compatible endpoint in
+  `NVIDIA_BASE_URL`; the default model is `nvidia/nemotron-3-nano-30b-a3b`.
+  `nvidia_client.py` dispatches model tool calls through the existing RAMS registry.
+- `openshell_runner.py` provides a no-shell, credential-scrubbed bridge to an
+  operator-created OpenShell sandbox. It does not claim that the normal desktop
+  process is sandboxed. OpenShell was not installed in the development workspace,
+  so availability is reported rather than fabricated.
+
 1. **Opportunity Pipeline Management** (Phase 3.4+):
    - Track application lifecycle: `discovered` → `evaluating` → `applying` → `applied` → `accepted` / `rejected`.
    - Integration with weekly planner to automatically schedule preparation & submission sessions for tracked opportunities.
@@ -383,4 +401,3 @@ CREATE TABLE opportunity_eligibility (
 5. **Student Academic Analytics & Reflections**:
    - Weekly retrospective reports (hours planned vs. hours actually studied, completion rate by course).
    - Automated memory updates regarding student velocity and subject difficulty.
-

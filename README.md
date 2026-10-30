@@ -45,6 +45,9 @@ This project is set up with an SQLite database configuration supporting both sta
      - Searches hackathons, student competitions, coding competitions, and innovation challenges using the Brave Search API when configured.
      - Saves source URLs, retrieval times, field-level confidence, and source history in SQLite.
      - Uses `BRAVE_SEARCH_API_KEY` in `.env` for live discovery. Without it, RAMS reports that search is unavailable rather than fabricating results.
+     - Discovery is restricted to individual Unstop and Devpost hackathon listings; platform filters are available in the Opportunities tab.
+   - **NVIDIA Nemotron** (optional): set `RAMS_LLM_PROVIDER=nvidia`, `NVIDIA_API_KEY`, `NVIDIA_BASE_URL`, and `NVIDIA_MODEL`. The default verified NVIDIA endpoint is `https://integrate.api.nvidia.com/v1` with `nvidia/nemotron-3-nano-30b-a3b`; RAMS uses an OpenAI-compatible chat request and routes returned tool calls through the existing registry.
+   - **OpenShell** (optional): RAMS includes a restricted wrapper in [`openshell_runner.py`](</Users/reyanshmanta/Code%20and%20all/RAMS-Returns/openshell_runner.py>) for an operator-created sandbox. RAMS does not claim to be sandboxed unless launched inside that sandbox. Verify availability with `openshell --version`.
 
 ### Running the Test Suites
 
@@ -59,4 +62,8 @@ This project is set up with an SQLite database configuration supporting both sta
 3. **Opportunity Discovery Test Suite**:
    ```bash
    python3 test_opportunity_service.py
+   ```
+4. **NVIDIA/OpenShell integration tests**:
+   ```bash
+   python3 test_nvidia_integration.py
    ```

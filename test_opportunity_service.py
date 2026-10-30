@@ -12,6 +12,7 @@ from opportunity_service import (
     extract_dates,
     list_opportunities,
     parse_opportunity_date,
+    platform_for_url,
     save_opportunity,
     _TextExtractor,
 )
@@ -20,12 +21,12 @@ from tools import TOOLS_REGISTRY, execute_tool
 
 class FakeProvider:
     def search(self, query, count=10):
-        return [{"title": "Campus AI Hackathon 2027", "url": "https://example.org/hackathon", "description": "Online hackathon. Registration deadline 2027-02-01.", "source_name": "Fake Search", "source_trust": "secondary"}]
+        return [{"title": "Campus AI Hackathon 2027", "url": "https://unstop.com/hackathons/campus-ai-2027", "description": "Online hackathon. Registration deadline 2027-02-01.", "source_name": "Unstop", "source_trust": "secondary"}]
 
 
 class FakeFetcher:
     def fetch(self, url):
-        return {"url": url, "title": "Campus AI Hackathon 2027", "text": "Online event. Registration deadline 2027-02-01."}
+        return {"url": url, "title": "Campus AI Hackathon 2027", "text": "Online event. Registration deadline 2027-02-01.", "links": []}
 
 
 class BrokenProvider:
@@ -86,6 +87,26 @@ class OpportunityServiceTests(unittest.TestCase):
     def test_provider_failure_is_honest(self):
         result = discover_opportunities("AI hackathons", "hackathon", BrokenProvider(), FakeFetcher(), self.db_path)
         self.assertFalse(result["success"]); self.assertIn("provider unavailable", result["error"])
+
+    def test_platform_validation_and_listing_restrictions(self):
+        self.assertEqual("Unstop", platform_for_url("https://unstop.com/hackathons/example", require_listing=True))
+        self.assertEqual("Devpost", platform_for_url("https://www.devpost.com/hackathons/example", require_listing=True))
+        for url in ("https://example.org/hackathons/example", "https://unstop.com.example.org/hackathons/x", "https://example.org/unstop.com", "https://unstop.com/hackathons"):
+            self.assertIsNone(platform_for_url(url, require_listing=True))
+
+    def test_unsupported_search_results_are_not_saved(self):
+        class MixedProvider:
+            def search(self, query, count=10):
+                return [{"title": "Blog", "url": "https://example.org/top-10-hackathons", "description": "article"}, {"title": "Devpost", "url": "https://devpost.com/hackathons/x", "description": "event"}]
+        result = discover_opportunities("AI", "hackathon", MixedProvider(), FakeFetcher(), self.db_path)
+        self.assertEqual(2, result["candidates_found"]); self.assertEqual(1, len(result["saved"])); self.assertEqual(1, len(result["skipped"]))
+
+    def test_platform_filters(self):
+        save_opportunity(self.sample(title="Unstop listing", official_source_url="https://unstop.com/hackathons/u", source_url="https://unstop.com/hackathons/u", platform="Unstop"), self.db_path)
+        save_opportunity(self.sample(title="Devpost listing", official_source_url="https://devpost.com/hackathons/d", source_url="https://devpost.com/hackathons/d", platform="Devpost"), self.db_path)
+        self.assertEqual(1, len(list_opportunities(platform="Unstop", db_path=self.db_path)))
+        self.assertEqual(1, len(list_opportunities(platform="Devpost", db_path=self.db_path)))
+        self.assertEqual(2, len(list_opportunities(platform="Both platforms", db_path=self.db_path)))
 
     def test_common_written_and_iso_dates(self):
         ref = date(2026, 10, 30)
@@ -707,4 +728,3 @@ class TestOpportunityHTMLExtraction(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
     normalized_title TEXT NOT NULL,
     description TEXT,
     opportunity_type TEXT NOT NULL,
+    platform TEXT,
     organizer TEXT,
     source_url TEXT,
     official_source_url TEXT,
@@ -287,4 +288,3 @@ CREATE TABLE IF NOT EXISTS opportunity_rankings (
 CREATE INDEX IF NOT EXISTS idx_rankings_opportunity ON opportunity_rankings (opportunity_id);
 CREATE INDEX IF NOT EXISTS idx_rankings_score ON opportunity_rankings (overall_score DESC);
 CREATE INDEX IF NOT EXISTS idx_rankings_category ON opportunity_rankings (ranking_category);
-

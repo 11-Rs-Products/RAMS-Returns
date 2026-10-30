@@ -589,12 +589,13 @@ def discover_student_opportunities(
 def list_saved_opportunities(
     opportunity_type: Optional[str] = None,
     query: Optional[str] = None,
+    platform: Optional[str] = "Both platforms",
     limit: int = 50,
     db_path: Optional[os.PathLike] = None,
 ) -> List[Dict[str, Any]]:
     """Lists opportunities already saved by a successful discovery run."""
     from opportunity_service import list_opportunities
-    return list_opportunities(opportunity_type=opportunity_type, query=query, limit=limit, db_path=db_path)
+    return list_opportunities(opportunity_type=opportunity_type, query=query, platform=platform, limit=limit, db_path=db_path)
 
 
 # ============================================================================
@@ -653,7 +654,7 @@ def rank_student_opportunities_tool(
     scoring model (eligibility 25, interests 20, skills 15, deadline 15, learning value 15, workload 10).
     """
     import ranking_service
-    return ranking_service.rank_student_opportunities(weights=weights, db_path=db_path)
+    return ranking_service.rank_student_opportunities(weights=weights, active_only=True, db_path=db_path)
 
 
 def list_ranked_opportunities_tool(
@@ -667,7 +668,7 @@ def list_ranked_opportunities_tool(
     """
     import ranking_service
     return ranking_service.list_ranked_opportunities(
-        category=category, min_score=min_score, limit=limit, db_path=db_path
+        category=category, min_score=min_score, limit=limit, active_only=True, db_path=db_path
     )
 
 
@@ -757,7 +758,7 @@ GEMINI_TOOL_DECLARATIONS = [
         "description": "Lists source-tracked opportunities previously saved in RAMS. Use for requests to show discovered opportunities.",
         "parameters": {"type": "OBJECT", "properties": {
             "opportunity_type": {"type": "STRING", "enum": ["hackathon", "student_competition", "coding_competition", "innovation_challenge"]},
-            "query": {"type": "STRING"}, "limit": {"type": "INTEGER"}
+            "query": {"type": "STRING"}, "platform": {"type": "STRING", "enum": ["Both platforms", "Unstop", "Devpost"]}, "limit": {"type": "INTEGER"}
         }}
     },
     {

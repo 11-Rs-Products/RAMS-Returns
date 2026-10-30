@@ -16,6 +16,7 @@ except ImportError:
 
 # Default Gemini model - using gemini-3.5-flash-lite for higher free-tier limits and high speed
 DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+DEFAULT_PROVIDER = os.getenv("RAMS_LLM_PROVIDER", "gemini").strip().lower()
 
 # Curated list of popular Gemini models (high-quota fast models first)
 RECOMMENDED_MODELS = [
@@ -65,6 +66,7 @@ def stream_chat_response(
     api_key: Optional[str] = None,
     system_instruction: Optional[str] = None,
     enable_tools: bool = True,
+    provider: Optional[str] = None,
 ) -> Generator[str, None, None]:
     """
     Streams responses from Gemini given a conversation history.
@@ -80,6 +82,21 @@ def stream_chat_response(
     Yields:
         Chunks of generated text.
     """
+    active_provider = (provider or DEFAULT_PROVIDER).strip().lower()
+    if active_provider == "nvidia":
+        from nvidia_client import stream_nvidia_chat_response
+        yield from stream_nvidia_chat_response(
+            messages=messages,
+            model=model,
+            api_key=api_key or os.getenv("NVIDIA_API_KEY"),
+            system_instruction=system_instruction,
+            enable_tools=enable_tools,
+        )
+        return
+    if active_provider != "gemini":
+        yield f"\n\n*(Unknown LLM provider '{active_provider}'. Choose gemini or nvidia.)*"
+        return
+
     client = get_gemini_client(api_key)
     target_model = model or DEFAULT_MODEL
 

@@ -40,6 +40,7 @@ from eligibility_service import (
     AVAIL_OPEN,
     AVAIL_UNKNOWN,
     AVAIL_UPCOMING,
+    compute_application_availability,
     ProfileAttribute,
     load_profile_with_reliability,
     evaluate_eligibility,
@@ -703,11 +704,13 @@ def _save_ranking_record(ranking: Dict[str, Any], db_path=None) -> int:
 
 def rank_student_opportunities(
     weights: Optional[Dict[str, float]] = None,
+    active_only: bool = False,
     db_path=None,
 ) -> Dict[str, Any]:
     """
-    Ranks all discovered opportunities in the database for the current student.
-    Persists ranking results into opportunity_rankings.
+    Ranks saved opportunities only. The Streamlit recommendations and agent tool
+    pass ``active_only=True``; the default remains inclusive for historical/audit
+    callers and backwards-compatible ranking reports.
     """
     profile_attrs = load_profile_with_reliability(db_path=db_path)
 
@@ -726,8 +729,13 @@ def rank_student_opportunities(
         }
 
     ranked_results: List[Dict[str, Any]] = []
+    skipped_by_availability: Dict[str, int] = {AVAIL_CLOSED: 0, AVAIL_UNKNOWN: 0, AVAIL_UPCOMING: 0}
 
     for opp in opps:
+        availability, _ = compute_application_availability(opp)
+        if active_only and availability not in (AVAIL_OPEN, AVAIL_CLOSING_SOON):
+            skipped_by_availability[availability] = skipped_by_availability.get(availability, 0) + 1
+            continue
         opp_id = opp["id"]
         # Ensure fresh eligibility evaluation
         elig_result = evaluate_eligibility(opp_id, db_path=db_path)
@@ -758,6 +766,7 @@ def rank_student_opportunities(
         "success": True,
         "count": len(ranked_results),
         "ranked_opportunities": ranked_results,
+        "skipped_by_availability": skipped_by_availability,
     }
 
 
@@ -765,6 +774,7 @@ def list_ranked_opportunities(
     category: Optional[str] = None,
     min_score: Optional[float] = None,
     limit: Optional[int] = None,
+    active_only: bool = False,
     db_path=None,
 ) -> Dict[str, Any]:
     """
@@ -803,6 +813,9 @@ def list_ranked_opportunities(
         if min_score is not None:
             clauses.append("r.overall_score >= ?")
             params.append(float(min_score))
+        if active_only:
+            clauses.append("r.application_availability IN (?, ?)")
+            params.extend([AVAIL_OPEN, AVAIL_CLOSING_SOON])
 
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
@@ -826,6 +839,13 @@ def list_ranked_opportunities(
         "count": len(items),
         "ranked_opportunities": items,
     }
+
+
+def list_deadline_unknown_opportunities(db_path=None) -> List[Dict[str, Any]]:
+    """Return saved opportunities that require deadline verification, not ranking."""
+    with get_db(db_path) as conn:
+        rows = conn.execute("SELECT * FROM opportunities ORDER BY created_at DESC").fetchall()
+    return [dict(row) for row in rows if compute_application_availability(dict(row))[0] == AVAIL_UNKNOWN]
 
 
 def explain_opportunity_ranking(opportunity_id: int, db_path=None) -> Dict[str, Any]:
